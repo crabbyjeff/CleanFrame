@@ -4,11 +4,18 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { openPreview, root } from './browser.mjs';
 
 const KEY = 'cleanframe.home.v1';
-const PRIMARY = ['stremio', 'netflix', 'disneyplus', 'youtube', 'appletv', 'primevideo', 'abciview', 'sbs', 'applemusic'];
-const IDS = ['IkWsFHtOY9.Stremio', 'org.tizen.netflix-app', 'MCmYXNxgcu.DisneyPlus', '9Ur5IzDKqV.TizenYouTube', 'com.samsung.tv.aria-video', 'org.tizen.primevideo', 'mWK87Xghap.ABCiview', 'OyE7OuxlUi.SBSOnDemand', 'org.tizen.apple.apple-music'];
-const NAMES = ['Stremio', 'Netflix', 'Disney+', 'YouTube', 'Apple TV', 'Prime Video', 'ABC iview', 'SBS On Demand', 'Apple Music'];
+// Home defaults. 'livetv' and 'inputs' are fixed features, not installed apps, so they are
+// absent from the mock catalogue and reach All apps through the local-feature path.
+const PRIMARY = ['appletv', 'disneyplus', 'paramountplus', 'netflix', 'primevideo', 'livetv', 'inputs'];
+const LOCAL = ['livetv', 'inputs'];
+// Installed apps the mock TV reports: the branded Home defaults plus spares to add from.
+const IDS = ['com.samsung.tv.aria-video', 'MCmYXNxgcu.DisneyPlus', 'rJyOSqC6Up.CBSAllAccess', 'org.tizen.netflix-app', 'org.tizen.primevideo', 'IkWsFHtOY9.Stremio', '9Ur5IzDKqV.TizenYouTube', 'mWK87Xghap.ABCiview', 'OyE7OuxlUi.SBSOnDemand', 'org.tizen.apple.apple-music'];
+const NAMES = ['Apple TV', 'Disney+', 'Paramount+', 'Netflix', 'Prime Video', 'Stremio', 'YouTube', 'ABC iview', 'SBS On Demand', 'Apple Music'];
+const FILL = ['IkWsFHtOY9.Stremio', '9Ur5IzDKqV.TizenYouTube'];
 const EXTRA = 'AbCdEf1234.FamilyApp', SPOTIFY = 'rJeHak5zRg.Spotify';
 const UNSAFE_NAME = 'Family <img src=x onerror="window.__catalogXss=1"> & TV';
+// Installed branded apps, plus Family/Spotify/HBO Max, plus the two local features.
+const CATALOGUE_ROWS = NAMES.length + 3 + LOCAL.length;
 const CATALOG = IDS.map((id, i) => ({ id, name: NAMES[i], show: true, iconPath: '' })).concat([
   { id: EXTRA, name: UNSAFE_NAME, show: true, iconPath: '' },
   { id: SPOTIFY, name: 'Spotify', show: true, iconPath: '' },
@@ -108,7 +115,7 @@ function installHarness({ seed, legacy, mock, catalog, minuteMs, catalogFailure,
     tizen.tvwindow = {
       getSource() { return { type: 'HDMI', number: __tv.currentInput }; },
       setSource(source, ok, fail) {
-        __tv.calls.push({ method: 'setSource', number: source.number });
+        __tv.calls.push({ method: 'setSource', type: source.type, number: source.number });
         setTimeout(() => { if (__tv.sourceFailure) fail({ name: 'SecurityError' }); else { __tv.currentInput = source.number; ok(source); } }, 0);
       }
     };
@@ -231,9 +238,9 @@ try {
   preview = await openPreview();
   await run('Legacy preference migration', async () => {
     for (const theme of ['list', 'shore', 'grid']) {
-      await page({ seed: baseline({ theme, dock: ['youtube', 'netflix'], wallpaper: walls[1].id, lastApp: 'youtube', mode: '15' }) });
+      await page({ seed: baseline({ theme, dock: ['primevideo', 'netflix'], wallpaper: walls[1].id, lastApp: 'primevideo', mode: '15' }) });
       const s = await state();
-      check(theme + ' preserves order, wallpaper and rotation', same(s.dock, ['youtube', 'netflix']) && s.wallpaper === walls[1].id && s.mode === '15' && s.lastApp === 'youtube', s);
+      check(theme + ' preserves order, wallpaper and rotation', same(s.dock, ['primevideo', 'netflix']) && s.wallpaper === walls[1].id && s.mode === '15' && s.lastApp === 'primevideo', s);
       check(theme + ' maps to intended two-layout appearance', s.look.layout === (theme === 'list' ? 'list' : 'dock') && s.look.bg === (theme === 'list' ? 'dark' : 'photo'), s.look);
       await closePage();
     }
@@ -264,7 +271,7 @@ try {
     check('Failed open-mode write retains prior photo', (await state()).wallpaper === walls[0].id && (await stored()).wallpaper === walls[0].id);
   });
   await run('Font recovery invalidates fallback measurements', async () => {
-    const seed = baseline({ dock: ['sbs', 'netflix'], lastApp: 'sbs', look: { bg: 'photo', layout: 'list', apps: 'both', font: 'manrope', controls: 'both', focus: 'glass', material: 'soft' } });
+    const seed = baseline({ dock: ['appletv', 'netflix'], lastApp: 'appletv', look: { bg: 'photo', layout: 'list', apps: 'both', font: 'manrope', controls: 'both', focus: 'glass', material: 'soft' } });
     const geometry = () => current.evaluate(() => ({
       plate: document.querySelector('#phScene > .ph-plate.is-current').style.width,
       names: [...document.querySelectorAll('.ph-name')].map(e => ({ text: e.textContent, size: e.style.fontSize, top: e.style.top }))
@@ -453,27 +460,38 @@ try {
     await current.waitForSelector('[data-action="inputs.retry"]');
     check('Empty inventory is truthful', (await current.locator('#stage').innerText()).includes('No HDMI inputs were reported'));
   });
+  await run('Live TV selects the tuner', async () => {
+    await page(); await scene('home');
+    await current.evaluate(() => { __tv.videoSources.connected.push({ type: 'TV', number: 1 }); });
+    await act('home.app.livetv'); await current.waitForFunction(() => __tv.calls.some(c => c.id === 'org.tizen.tv-viewer'));
+    check('Live TV selects the tuner before opening the viewer', await current.evaluate(() => __tv.calls[0].method === 'setSource' && __tv.calls[0].type === 'TV' && __tv.calls[1].id === 'org.tizen.tv-viewer'));
+    await closePage();
+    await page(); await scene('home');
+    await act('home.app.livetv'); await current.waitForSelector('.msg-acts>button');
+    check('A TV reporting no tuner shows an error and changes nothing', (await current.locator('#stage').innerText()).includes('did not report a tuner') && await current.evaluate(() => __tv.calls.length === 0));
+  });
   await run('Real catalogue and native launch boundary', async () => {
     await page(); await library();
     const names = await current.locator('[data-action^="apps.open."] .label').allTextContents();
-    check('Consumer catalogue excludes services, self and duplicate YouTube', names.length === 12 && names.filter(n => n === 'YouTube').length === 1 && !names.includes('CleanFrame') && !names.includes('Background worker'), names);
+    check('Consumer catalogue excludes services, self and duplicate YouTube', names.length === CATALOGUE_ROWS && names.filter(n => n === 'YouTube').length === 1 && !names.includes('CleanFrame') && !names.includes('Background worker'), names);
+    check('Fixed features are offered beside installed apps', names.includes('Live TV') && names.includes('Inputs'), names);
     check('Installed names stay text, including HTML punctuation', names.includes(UNSAFE_NAME) && !(await current.evaluate(() => window.__catalogXss)));
     check('Exploration fixtures do not appear', !names.includes('Plex') && !names.includes('Jellyfin'));
     await act('apps.open.' + SPOTIFY); await current.waitForFunction(() => __tv.calls.length > 0);
     check('Extra-brand app launches native ID', (await current.evaluate(() => __tv.calls.at(-1))).id === SPOTIFY);
     await current.evaluate(() => window.dispatchEvent(new Event('focus')));
     await scene('home'); await act('home.app.netflix'); await current.waitForFunction(() => __tv.calls.length === 2);
-    check('Primary app keeps verified target', (await current.evaluate(() => __tv.calls.at(-1))).id === IDS[1]);
+    check('Primary app keeps verified target', (await current.evaluate(() => __tv.calls.at(-1))).id === 'org.tizen.netflix-app');
     await current.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await act('util.art'); await current.waitForFunction(() => __tv.calls.length === 3);
-    const art = await current.evaluate(() => __tv.calls.at(-1));
-    check('Art Mode uses app-control with fullscreen request', art.method === 'launchAppControl' && art.id === 'org.tizen.art-app' && art.control.data.some(d => d.key === 'mode' && d.value[0] === 'fullscreen'), art);
+    check('Art Mode is not offered on this non-Frame TV', !(await current.locator('[data-action="util.art"]').count()));
+    await act('util.ambient'); await current.waitForFunction(() => __tv.calls.length === 3);
+    check('Ambient Mode launches its target', (await current.evaluate(() => __tv.calls.at(-1))).id === 'org.tizen.ambientapp');
     await current.evaluate(() => window.dispatchEvent(new Event('focus'))); await group('samsung'); await act('samsung.home');
     await current.waitForFunction(() => __tv.calls.length === 4);
     check('Samsung escape keeps CSFS target', (await current.evaluate(() => __tv.calls.at(-1))).id === 'com.samsung.tv.csfs');
     await current.evaluate(() => window.dispatchEvent(new Event('focus'))); await group('samsung'); await act('samsung.settings');
     await current.waitForFunction(() => __tv.calls.length === 5);
-    check('TV settings keeps installed target', (await current.evaluate(() => __tv.calls.at(-1))).id === 'com.samsung.tv.coba.setting');
+    check('TV settings keeps installed target', (await current.evaluate(() => __tv.calls.at(-1))).id === 'org.tizen.menu');
     await current.evaluate(() => { window.dispatchEvent(new Event('focus')); __tv.launchFailure = true; });
     await scene('home'); await act('home.app.netflix'); await current.waitForFunction(() => ShoreQA.where().view === 'message');
     check('Launch failure is shown', /could not|unavailable|try again/i.test(await current.locator('#stage').innerText()));
@@ -497,7 +515,7 @@ try {
     check('Catalogue failure leaves Home intact', same((await state()).dock, PRIMARY));
     await current.evaluate(() => { __tv.catalogFailure = false; }); await act('apps.retry');
     await current.waitForSelector('[data-action="apps.open.' + EXTRA + '"]');
-    check('Retry displays real installed names', (await current.locator('[data-action^="apps.open."]').count()) === 12);
+    check('Retry displays real installed names', (await current.locator('[data-action^="apps.open."]').count()) === CATALOGUE_ROWS);
   });
   await run('Native icon and failed-image fallback', async () => {
     await page({ catalog: CATALOG.map(a => a.id === EXTRA ? { ...a, iconPath: '/home/assets/icons/netflix.svg' } : a) });
@@ -535,10 +553,13 @@ try {
     await act('editor.move.netflix'); await nav('down'); check('Unfinished move does not write', same((await stored()).dock, start));
     await nav('back'); check('Back cancels unfinished move', same((await state()).dock, start));
     await act('editor.move.netflix'); await nav('down', 'ok');
-    const moved = start.slice(); [moved[1], moved[2]] = [moved[2], moved[1]];
+    const from = start.indexOf('netflix'), moved = start.slice();
+    [moved[from], moved[from + 1]] = [moved[from + 1], moved[from]];
     check('Placed move persists immediately', same((await stored()).dock, moved));
-    await act('editor.add.' + EXTRA); check('Nine-app cap prevents addition', (await state()).dock.length === 9 && !(await state()).dock.includes(EXTRA));
-    await remove('stremio'); await act('editor.add.' + EXTRA);
+    for (const id of FILL) await act('editor.add.' + id);
+    check('Home fills to the nine-app cap', (await state()).dock.length === 9, (await state()).dock);
+    await act('editor.add.' + SPOTIFY); check('Nine-app cap prevents addition', (await state()).dock.length === 9 && !(await state()).dock.includes(SPOTIFY));
+    await remove(FILL[0]); await act('editor.add.' + EXTRA);
     check('Native app can be pinned with stable ID', (await stored()).dock.includes(EXTRA) && (await state()).dock.length === 9);
     check('Native pin retains readable metadata for failed discovery', (await stored()).appRecords.some(a => a.id === EXTRA && a.name === UNSAFE_NAME));
     await current.reload(); await ready(); check('Native pin survives reload', (await state()).dock.includes(EXTRA));
@@ -1041,7 +1062,7 @@ try {
   await run('Physical-key repeats and Back hierarchy', async () => {
     await page(); await editor(); await remove('netflix');
     await current.keyboard.down('Enter'); await current.keyboard.down('Enter');
-    check('Held OK restores once without removing again', (await state()).dock.includes('netflix') && (await state()).dock.length === 9);
+    check('Held OK restores once without removing again', (await state()).dock.includes('netflix') && (await state()).dock.length === PRIMARY.length);
     await current.keyboard.up('Enter');
     await current.keyboard.down('Escape'); await current.keyboard.down('Escape');
     check('Held Back closes one layer only', (await call('where')).view === 'settings' && (await state()).focusAction === 'settings.editor');

@@ -1,15 +1,18 @@
 /* Public Tizen application APIs. No Mac server, network address or credentials. */
 (function () {
   'use strict';
+  /* Home defaults first, then the services that keep a bundled mark if they are added later.
+     Order sets the ranking of known apps in All apps. */
   var IDS = {
-    stremio: 'IkWsFHtOY9.Stremio', netflix: 'org.tizen.netflix-app',
-    disneyplus: 'MCmYXNxgcu.DisneyPlus', youtube: '9Ur5IzDKqV.TizenYouTube',
-    appletv: 'com.samsung.tv.aria-video', primevideo: 'org.tizen.primevideo',
+    appletv: 'com.samsung.tv.aria-video', disneyplus: 'MCmYXNxgcu.DisneyPlus',
+    paramountplus: 'rJyOSqC6Up.CBSAllAccess', netflix: 'org.tizen.netflix-app',
+    primevideo: 'org.tizen.primevideo', livetv: 'org.tizen.tv-viewer',
+    stremio: 'IkWsFHtOY9.Stremio', youtube: '9Ur5IzDKqV.TizenYouTube',
     abciview: 'mWK87Xghap.ABCiview', sbs: 'OyE7OuxlUi.SBSOnDemand',
     applemusic: 'org.tizen.apple.apple-music'
   };
   var STREAMING = ['as6cYRgkPy.Binge', '73iTZRTc34.Stan', '5b8c3eb16b.BeamCTVDev',
-    'cj37Ni3qXM.HBONow', 'LBUAQX1exg.Hulu', 'gzcc4LRFBF.Peacock', 'rJyOSqC6Up.CBSAllAccess',
+    'cj37Ni3qXM.HBONow', 'LBUAQX1exg.Hulu', 'gzcc4LRFBF.Peacock',
     'Rk72oKFsRS.OtterKidsProd', '70fRFUwYlD.OtterGAProd', 'PvWgqxV3Xa.YouTubeTV',
     'XtU8fQk2gN.ESPN', 'ZmmGjO6VKO.slingtv', 'VtuWAiZdHN.STARZPlay', 'ckfgqqzvt0.dplus',
     'kk8MbItQ0H.VUDU', 'Jz7aUrV2Q4.Twitch', 'OK2Rdkjmsi.IMDbTV', 'Ob3XhAVMu6.amcplus',
@@ -63,10 +66,9 @@
       }, function (err) { finish(failure(err)); });
     } catch (err) { finish(failure(err)); }
   }
-  function setSource(port, done) {
-    cancelSource();
+  /* Selects a resolved source, then brings up the TV viewer to show it. */
+  function switchSource(resolve, isSelected, done) {
     var tvw = window.tizen && window.tizen.tvwindow, app = api(), finished = false;
-    if (typeof port !== 'number' || !isFinite(port) || port < 0 || Math.floor(port) !== port) { done({ message: 'This HDMI input is not available.' }); return; }
     if (!tvw || typeof tvw.setSource !== 'function' || !app || typeof app.launch !== 'function') { unavailable(done); return; }
     var timer = setTimeout(function () { finish({ message: 'The TV did not respond. Please try again.' }); }, 8000);
     function finish(err, value) {
@@ -77,16 +79,13 @@
     }
     function cancel() { finish({ message: 'Input change cancelled.', cancelled: true }); }
     sourceCancel = cancel;
-    sources(function (err, list) {
+    resolve(function (err, input) {
       if (finished) return;
       if (err) { finish(err); return; }
-      var input = null;
-      list.some(function (item) { if (item.number === port) { input = item; return true; } return false; });
-      if (!input) { finish({ message: 'This HDMI input is no longer available.' }); return; }
       try {
         tvw.setSource(input.source, function (selected) {
           if (finished) return;
-          if (selected && (selected.type !== 'HDMI' || selected.number !== port)) { finish({ message: 'The TV selected a different input. Please try again.' }); return; }
+          if (selected && !isSelected(selected)) { finish({ message: 'The TV selected a different input. Please try again.' }); return; }
           try {
             app.launch('org.tizen.tv-viewer', function () { finish(null, input); }, function () {
               finish({ message: 'The input was selected, but the TV viewer could not open.', detail: 'Use the remote’s Source control to view the input.' });
@@ -95,6 +94,39 @@
         }, function (error) { if (!finished) finish(failure(error)); });
       } catch (error) { finish(failure(error)); }
     });
+  }
+  function setSource(port, done) {
+    cancelSource();
+    if (typeof port !== 'number' || !isFinite(port) || port < 0 || Math.floor(port) !== port) { done({ message: 'This HDMI input is not available.' }); return; }
+    switchSource(function (found) {
+      sources(function (err, list) {
+        var input = null;
+        if (err) { found(err); return; }
+        list.some(function (item) { if (item.number === port) { input = item; return true; } return false; });
+        if (!input) found({ message: 'This HDMI input is no longer available.' });
+        else found(null, input);
+      });
+    }, function (selected) { return selected.type === 'HDMI' && selected.number === port; }, done);
+  }
+  /* Launching the TV viewer alone resumes the last source, so the tuner is selected first. */
+  function tuner(done) {
+    cancelSource();
+    var sys = window.tizen && window.tizen.systeminfo;
+    if (!sys || typeof sys.getPropertyValue !== 'function') { unavailable(done); return; }
+    switchSource(function (found) {
+      var finish = bounded(found);
+      try {
+        sys.getPropertyValue('VIDEOSOURCE', function (video) {
+          var match = null;
+          [video && video.connected, video && video.disconnected].forEach(function (list) {
+            if (match || !Array.isArray(list)) return;
+            list.some(function (src) { if (src && src.type === 'TV') { match = src; return true; } return false; });
+          });
+          if (match) finish(null, { name: 'Live TV', source: match });
+          else finish({ message: 'This TV did not report a tuner input.' });
+        }, function (err) { finish(failure(err)); });
+      } catch (err) { finish(failure(err)); }
+    }, function (selected) { return selected.type === 'TV'; }, done);
   }
   function launchApp(id, done) {
     if (!api()) { unavailable(done); return; }
@@ -115,8 +147,11 @@
       api().launchAppControl(control, 'org.tizen.art-app', function () { finish(null); }, function (err) { finish(failure(err)); });
     } catch (err) { finish(failure(err)); }
   }
+  /* com.samsung.tv.coba.ambient starts without showing anything on this TV. */
+  function ambient(done) { launchApp('org.tizen.ambientapp', done); }
   function home(done) { launchApp('com.samsung.tv.csfs', done); }
-  function settings(done) { launchApp('com.samsung.tv.coba.setting', done); }
+  /* On this 2021 TV com.samsung.tv.coba.setting starts without showing anything; org.tizen.menu opens Settings. */
+  function settings(done) { launchApp('org.tizen.menu', done); }
   function apps(done) {
     if (!api()) { unavailable(done); return; }
     // Large installed catalogues can take longer than a launch response.
@@ -139,5 +174,5 @@
       }, function (err) { finish(failure(err)); });
     } catch (err) { finish(failure(err)); }
   }
-  window.FrameDevice = { launch: launch, launchApp: launchApp, art: art, home: home, settings: settings, apps: apps, sources: sources, setSource: setSource, cancelSource: cancelSource };
+  window.FrameDevice = { launch: launch, launchApp: launchApp, art: art, ambient: ambient, home: home, settings: settings, apps: apps, sources: sources, setSource: setSource, tuner: tuner, cancelSource: cancelSource };
 }());

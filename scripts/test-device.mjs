@@ -161,3 +161,54 @@ test('unknown and invalid ports cannot be substituted and a newer request cancel
   h.sourceRequests[0].ok(video); assert.equal(h.changes.length, 0);
   h.sourceRequests[1].ok(video); assert.equal(h.changes[0].source.number, 2);
 });
+
+test('Live TV selects the tuner before opening the viewer, whatever the current input', () => {
+  const tv = { type: 'TV', number: 1 }, hdmi = { type: 'HDMI', number: 4 };
+  const h = harness(), results = [];
+  h.setCurrent(hdmi);
+  h.device.tuner((error, value) => results.push({ error, value }));
+  h.sourceRequests[0].ok({ connected: [hdmi, tv], disconnected: [] });
+  assert.equal(h.changes[0].source, tv);
+  assert.equal(h.launches.length, 0);
+  h.changes[0].ok(tv);
+  assert.equal(h.launches[0].id, 'org.tizen.tv-viewer');
+  h.launches[0].ok();
+  assert.equal(results.length, 1);
+  assert.equal(results[0].error, null);
+});
+
+test('Live TV uses a tuner reported as disconnected and never substitutes another input', () => {
+  const tv = { type: 'TV', number: 1 }, hdmi = { type: 'HDMI', number: 4 };
+  const found = harness(), results = [];
+  found.device.tuner(error => results.push(error));
+  found.sourceRequests[0].ok({ connected: [hdmi], disconnected: [tv] });
+  assert.equal(found.changes[0].source, tv);
+
+  const missing = harness(), errors = [];
+  missing.device.tuner(error => errors.push(error));
+  missing.sourceRequests[0].ok({ connected: [hdmi], disconnected: [] });
+  assert.equal(errors.length, 1); assert.ok(errors[0]);
+  assert.equal(missing.changes.length, 0);
+  assert.equal(missing.launches.length, 0);
+});
+
+test('Live TV failures, a wrong selection and cancellation never open the viewer', () => {
+  const tv = { type: 'TV', number: 1 };
+  for (const mode of ['fail', 'wrong', 'cancel']) {
+    const h = harness(), results = [];
+    h.device.tuner(error => results.push(error));
+    h.sourceRequests[0].ok({ connected: [tv], disconnected: [] });
+    if (mode === 'fail') h.changes[0].fail({ name: 'SecurityError' });
+    else if (mode === 'wrong') h.changes[0].ok({ type: 'HDMI', number: 4 });
+    else { h.device.cancelSource(); h.changes[0].ok(tv); }
+    assert.equal(results.length, 1); assert.ok(results[0]);
+    assert.equal(h.launches.length, 0);
+  }
+});
+
+test('Live TV reports an unavailable API without opening the viewer', () => {
+  const h = harness({ supported: false }), results = [];
+  h.device.tuner(error => results.push(error));
+  assert.equal(results.length, 1); assert.ok(results[0]);
+  assert.equal(h.launches.length, 0);
+});
